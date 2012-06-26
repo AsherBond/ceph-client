@@ -1380,23 +1380,40 @@ fail:
 }
 
 /*
- * Request sync osd read
+ * Synchronous osd object method call
  */
 static int rbd_req_sync_exec(struct rbd_device *rbd_dev,
 			     const char *object_name,
 			     const char *class_name,
 			     const char *method_name,
-			     const char *data,
-			     int len,
+			     const char *outbound,
+			     size_t outbound_size,
+			     int flags,
 			     u64 *ver)
 {
 	struct ceph_osd_req_op *ops;
 	int class_name_len = strlen(class_name);
 	int method_name_len = strlen(method_name);
+	int payload_size;
 	int ret;
 
-	ops = rbd_create_rw_ops(1, CEPH_OSD_OP_CALL,
-				    class_name_len + method_name_len + len);
+	/*
+	 * For a WRITE operation (from our perspective), the data
+	 * sent as input parameters to the method will be sent as
+	 * part of the message payload.  That data and its size are
+	 * supplied via the indata and indata_len fields
+	 * (respectively) in the OSD request operation.
+	 *
+	 * For a READ, the returned data will be read into pages
+	 * allocated by rbd_req_sync_op().  We indicate the maximum
+	 * size of the data we expect to receive via the "len"
+	 * argument to rbd_req_sync_op().
+	 */
+	payload_size = class_name_len + method_name_len;
+	if (flags & CEPH_OSD_FLAG_WRITE)
+		payload_size += outbound_size;
+
+	ops = rbd_create_rw_ops(1, CEPH_OSD_OP_CALL, payload_size);
 	if (!ops)
 		return -ENOMEM;
 
@@ -1405,13 +1422,12 @@ static int rbd_req_sync_exec(struct rbd_device *rbd_dev,
 	ops[0].cls.method_name = method_name;
 	ops[0].cls.method_len = (__u8) method_name_len;
 	ops[0].cls.argc = 0;
-	ops[0].cls.indata = data;
-	ops[0].cls.indata_len = len;
+	ops[0].cls.indata = outbound;
+	ops[0].cls.indata_len = outbound_size;
 
 	ret = rbd_req_sync_op(rbd_dev, NULL,
 			       CEPH_NOSNAP,
-			       CEPH_OSD_FLAG_WRITE | CEPH_OSD_FLAG_ONDISK,
-			       ops,
+			       flags, ops,
 			       object_name, 0, 0, NULL, NULL, ver);
 
 	rbd_destroy_ops(ops);
@@ -1672,7 +1688,9 @@ static int rbd_header_add_snap(struct rbd_device *rbd_dev,
 
 	ret = rbd_req_sync_exec(rbd_dev, rbd_dev->header_name,
 				"rbd", "snap_add",
-				data, p - data, &ver);
+				data, (size_t) (p - data),
+				CEPH_OSD_FLAG_WRITE | CEPH_OSD_FLAG_ONDISK,
+				&ver);
 
 	kfree(data);
 
