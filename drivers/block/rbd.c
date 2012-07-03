@@ -2355,10 +2355,6 @@ static int rbd_add_parse_args(struct rbd_device *rbd_dev,
 
 	rbd_dev->image_name_len = len;
 
-	BUILD_BUG_ON(RBD_MAX_HEADER_NAME_LEN
-				< RBD_MAX_OBJ_NAME_LEN + sizeof (RBD_SUFFIX));
-	sprintf(rbd_dev->header_name, "%s%s", rbd_dev->image_name, RBD_SUFFIX);
-
 	/*
 	 * The snapshot name is optional, but it's an error if it's
 	 * too long.  If no snapshot is supplied, fill in the default.
@@ -2429,6 +2425,10 @@ static ssize_t rbd_add(struct bus_type *bus,
 	if (rc < 0)
 		goto err_out_client;
 	rbd_dev->poolid = rc;
+
+	BUILD_BUG_ON(RBD_MAX_HEADER_NAME_LEN
+				< RBD_MAX_OBJ_NAME_LEN + sizeof (RBD_SUFFIX));
+	sprintf(rbd_dev->header_name, "%s%s", rbd_dev->image_name, RBD_SUFFIX);
 
 	/* register our block device */
 	rc = register_blkdev(0, rbd_dev->name);
