@@ -71,7 +71,8 @@
 #define DEV_NAME_LEN		32
 #define MAX_INT_FORMAT_WIDTH	((5 * sizeof (int)) / 2 + 1)
 
-#define RBD_NOTIFY_TIMEOUT_DEFAULT 10
+#define RBD_NOTIFY_TIMEOUT_DEFAULT	10
+#define RBD_RBD_FORMAT_DEFAULT		1	/* we recognize 1 only */
 
 /*
  * block device image metadata (in-memory version)
@@ -95,6 +96,7 @@ struct rbd_image_header {
 
 struct rbd_options {
 	int	notify_timeout;
+	int	rbd_format;
 };
 
 /*
@@ -185,6 +187,11 @@ struct rbd_device {
 
 	/* sysfs related */
 	struct device		dev;
+};
+
+static struct rbd_options rbd_options_default = {
+	.notify_timeout	= RBD_NOTIFY_TIMEOUT_DEFAULT,
+	.rbd_format	= RBD_RBD_FORMAT_DEFAULT,
 };
 
 static DEFINE_MUTEX(ctl_mutex);	  /* Serialize open/close/setup/teardown */
@@ -343,6 +350,7 @@ static struct rbd_client *__rbd_client_find(struct ceph_options *ceph_opts)
  */
 enum {
 	Opt_notify_timeout,
+	Opt_rbd_format,
 	Opt_last_int,
 	/* int args above */
 	Opt_last_string,
@@ -351,6 +359,7 @@ enum {
 
 static match_table_t rbd_opts_tokens = {
 	{Opt_notify_timeout, "notify_timeout=%d"},
+	{Opt_rbd_format, "rbd_format=%d"},
 	/* int args above */
 	/* string args above */
 	{-1, NULL}
@@ -385,6 +394,17 @@ static int parse_rbd_opts_token(char *c, void *private)
 	case Opt_notify_timeout:
 		rbd_opts->notify_timeout = intval;
 		break;
+	case Opt_rbd_format:
+		switch (intval) {
+		case 1:
+			break;
+		default:
+			pr_err("bad rbd_format %d (only format 1 supported)\n",
+				intval);
+			return -EINVAL;
+		}
+		rbd_opts->rbd_format = intval;
+		break;
 	default:
 		BUG_ON(token);
 	}
@@ -403,12 +423,11 @@ static struct rbd_client *rbd_get_client(const char *mon_addr,
 	struct ceph_options *ceph_opts;
 	struct rbd_options *rbd_opts;
 
-	rbd_opts = kzalloc(sizeof(*rbd_opts), GFP_KERNEL);
+	rbd_opts = kmalloc(sizeof(*rbd_opts), GFP_KERNEL);
 	if (!rbd_opts)
 		return ERR_PTR(-ENOMEM);
 
-	rbd_opts->notify_timeout = RBD_NOTIFY_TIMEOUT_DEFAULT;
-
+	*rbd_opts = rbd_options_default;	/* Assume default values */
 	ceph_opts = ceph_parse_options(options, mon_addr,
 				mon_addr + mon_addr_len,
 				parse_rbd_opts_token, rbd_opts);
