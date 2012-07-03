@@ -55,7 +55,7 @@
 
 #define RBD_MINORS_PER_MAJOR	256		/* max minors per blkdev */
 
-#define RBD_MAX_MD_NAME_LEN	(RBD_MAX_OBJ_NAME_LEN + sizeof(RBD_SUFFIX))
+#define RBD_MAX_HEADER_NAME_LEN	(RBD_MAX_OBJ_NAME_LEN + sizeof(RBD_SUFFIX))
 #define RBD_MAX_POOL_NAME_LEN	64
 #define RBD_MAX_SNAP_NAME_LEN	32
 #define RBD_MAX_OPT_LEN		1024
@@ -163,9 +163,9 @@ struct rbd_device {
 	spinlock_t		lock;		/* queue lock */
 
 	struct rbd_image_header	header;
-	char			obj[RBD_MAX_OBJ_NAME_LEN]; /* rbd image name */
-	int			obj_len;
-	char			obj_md_name[RBD_MAX_MD_NAME_LEN]; /* hdr nm. */
+	char			image_name[RBD_MAX_OBJ_NAME_LEN];
+	int			image_name_len;
+	char			header_name[RBD_MAX_HEADER_NAME_LEN];
 	char			pool_name[RBD_MAX_POOL_NAME_LEN];
 	int			poolid;
 
@@ -1220,8 +1220,8 @@ static void rbd_watch_cb(u64 ver, u64 notify_id, u8 opcode, void *data)
 	if (!rbd_dev)
 		return;
 
-	dout("rbd_watch_cb %s notify_id=%lld opcode=%d\n", rbd_dev->obj_md_name,
-		notify_id, (int)opcode);
+	dout("rbd_watch_cb %s notify_id=%lld opcode=%d\n",
+		rbd_dev->header_name, notify_id, (int) opcode);
 	mutex_lock_nested(&ctl_mutex, SINGLE_DEPTH_NESTING);
 	rc = __rbd_refresh_header(rbd_dev);
 	mutex_unlock(&ctl_mutex);
@@ -1229,7 +1229,7 @@ static void rbd_watch_cb(u64 ver, u64 notify_id, u8 opcode, void *data)
 		pr_warning(RBD_DRV_NAME "%d got notification but failed to "
 			   " update snaps: %d\n", rbd_dev->major, rc);
 
-	rbd_req_sync_notify_ack(rbd_dev, ver, notify_id, rbd_dev->obj_md_name);
+	rbd_req_sync_notify_ack(rbd_dev, ver, notify_id, rbd_dev->header_name);
 }
 
 /*
@@ -1317,7 +1317,7 @@ static void rbd_notify_cb(u64 ver, u64 notify_id, u8 opcode, void *data)
 		return;
 
 	dout("rbd_notify_cb %s notify_id=%lld opcode=%d\n",
-				rbd_dev->obj_md_name,
+				rbd_dev->header_name,
 		notify_id, (int)opcode);
 }
 
@@ -1595,7 +1595,7 @@ static int rbd_read_header(struct rbd_device *rbd_dev,
 
 		rc = rbd_req_sync_read(rbd_dev,
 				       NULL, CEPH_NOSNAP,
-				       rbd_dev->obj_md_name,
+				       rbd_dev->header_name,
 				       0, len,
 				       (char *)dh, &ver);
 		if (rc < 0)
@@ -1605,7 +1605,8 @@ static int rbd_read_header(struct rbd_device *rbd_dev,
 		if (rc < 0) {
 			if (rc == -ENXIO)
 				pr_warning("unrecognized header format"
-					   " for image %s", rbd_dev->obj);
+					   " for image %s",
+					   rbd_dev->image_name);
 			goto out_dh;
 		}
 
@@ -1661,7 +1662,7 @@ static int rbd_header_add_snap(struct rbd_device *rbd_dev,
 	ceph_encode_string_safe(&p, e, snap_name, name_len, bad);
 	ceph_encode_64_safe(&p, e, new_snapid, bad);
 
-	ret = rbd_req_sync_exec(rbd_dev, rbd_dev->obj_md_name,
+	ret = rbd_req_sync_exec(rbd_dev, rbd_dev->header_name,
 				"rbd", "snap_add",
 				data, p - data, &ver);
 
@@ -1856,7 +1857,7 @@ static ssize_t rbd_name_show(struct device *dev,
 {
 	struct rbd_device *rbd_dev = dev_to_rbd_dev(dev);
 
-	return sprintf(buf, "%s\n", rbd_dev->obj);
+	return sprintf(buf, "%s\n", rbd_dev->image_name);
 }
 
 static ssize_t rbd_snap_show(struct device *dev,
@@ -2158,7 +2159,7 @@ static int rbd_init_watch_dev(struct rbd_device *rbd_dev)
 	int ret, rc;
 
 	do {
-		ret = rbd_req_sync_watch(rbd_dev, rbd_dev->obj_md_name,
+		ret = rbd_req_sync_watch(rbd_dev, rbd_dev->header_name,
 					 rbd_dev->header.obj_version);
 		if (ret == -ERANGE) {
 			mutex_lock_nested(&ctl_mutex, SINGLE_DEPTH_NESTING);
@@ -2285,7 +2286,7 @@ static inline size_t copy_token(const char **buf,
 }
 
 /*
- * This fills in the pool_name, obj, obj_len, snap_name, obj_len,
+ * This fills in the pool_name, image_name, image_name_len, snap_name,
  * rbd_dev, rbd_md_name, and name fields of the given rbd_dev, based
  * on the list of monitor addresses and other options provided via
  * /sys/bus/rbd/add.
@@ -2317,17 +2318,18 @@ static int rbd_add_parse_args(struct rbd_device *rbd_dev,
 	if (!len || len >= sizeof (rbd_dev->pool_name))
 		return -EINVAL;
 
-	len = copy_token(&buf, rbd_dev->obj, sizeof (rbd_dev->obj));
-	if (!len || len >= sizeof (rbd_dev->obj))
+	len = copy_token(&buf, rbd_dev->image_name,
+					sizeof (rbd_dev->image_name));
+	if (!len || len >= sizeof (rbd_dev->image_name))
 		return -EINVAL;
 
 	/* We have the object length in hand, save it. */
 
-	rbd_dev->obj_len = len;
+	rbd_dev->image_name_len = len;
 
-	BUILD_BUG_ON(RBD_MAX_MD_NAME_LEN
+	BUILD_BUG_ON(RBD_MAX_HEADER_NAME_LEN
 				< RBD_MAX_OBJ_NAME_LEN + sizeof (RBD_SUFFIX));
-	sprintf(rbd_dev->obj_md_name, "%s%s", rbd_dev->obj, RBD_SUFFIX);
+	sprintf(rbd_dev->header_name, "%s%s", rbd_dev->image_name, RBD_SUFFIX);
 
 	/*
 	 * The snapshot name is optional, but it's an error if it's
@@ -2477,7 +2479,7 @@ static void rbd_dev_release(struct device *dev)
 						    rbd_dev->watch_request);
 	}
 	if (rbd_dev->watch_event)
-		rbd_req_sync_unwatch(rbd_dev, rbd_dev->obj_md_name);
+		rbd_req_sync_unwatch(rbd_dev, rbd_dev->header_name);
 
 	rbd_put_client(rbd_dev);
 
@@ -2556,7 +2558,7 @@ static ssize_t rbd_snap_add(struct device *dev,
 	mutex_unlock(&ctl_mutex);
 
 	/* make a best effort, don't error if failed */
-	rbd_req_sync_notify(rbd_dev, rbd_dev->obj_md_name);
+	rbd_req_sync_notify(rbd_dev, rbd_dev->header_name);
 
 	ret = count;
 	kfree(name);
