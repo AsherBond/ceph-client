@@ -72,7 +72,7 @@
 #define MAX_INT_FORMAT_WIDTH	((5 * sizeof (int)) / 2 + 1)
 
 #define RBD_NOTIFY_TIMEOUT_DEFAULT	10
-#define RBD_RBD_FORMAT_DEFAULT		1	/* we recognize 1 only */
+#define RBD_RBD_FORMAT_DEFAULT		1	/* we recognize 1 and 2 */
 
 /*
  * block device image metadata (in-memory version)
@@ -397,9 +397,10 @@ static int parse_rbd_opts_token(char *c, void *private)
 	case Opt_rbd_format:
 		switch (intval) {
 		case 1:
+		case 2:
 			break;
 		default:
-			pr_err("bad rbd_format %d (only format 1 supported)\n",
+			pr_err("bad rbd_format %d (must be 1 or 2)\n",
 				intval);
 			return -EINVAL;
 		}
