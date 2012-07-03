@@ -55,12 +55,22 @@
 
 #define RBD_MINORS_PER_MAJOR	256		/* max minors per blkdev */
 
-#define RBD_MAX_HEADER_NAME_LEN	(RBD_MAX_OBJ_NAME_LEN + sizeof(RBD_SUFFIX))
+// #define RBD_MAX_HEADER_NAME_LEN	(RBD_MAX_OBJ_NAME_LEN + sizeof(RBD_SUFFIX))
+#define RBD_MAX_HEADER_NAME_LEN	\
+		(RBD_MAX_OBJ_NAME_LEN + sizeof (RBD_HEADER_PREFIX))
 #define RBD_MAX_POOL_NAME_LEN	64
 #define RBD_MAX_SNAP_NAME_LEN	32
 #define RBD_MAX_OPT_LEN		1024
 
 #define RBD_SNAP_HEAD_NAME	"-"
+
+/* Definitions for format 2 */
+
+#define RBD_OBJ_ID_PREFIX	"rbd_id."
+#define RBD_HEADER_PREFIX	"rbd_header."
+#define RBD_DATA_PREFIX		"rbd_data."
+/* Example data object: new: "rbd_data.7.0000000000000001" */
+/* Example data object: old: "rb.0.6.000000000001" */
 
 /*
  * An RBD device name will be "rbd#", where the "rbd" comes from
@@ -923,6 +933,8 @@ static int rbd_do_request(struct request *rq,
 		goto done_pages;
 	}
 
+	req->r_num_pages = num_pages;
+	req->r_page_alignment = 0;
 	req->r_callback = rbd_cb;
 
 	req_data->rq = rq;
@@ -2426,9 +2438,154 @@ static ssize_t rbd_add(struct bus_type *bus,
 		goto err_out_client;
 	rbd_dev->poolid = rc;
 
-	BUILD_BUG_ON(RBD_MAX_HEADER_NAME_LEN
-				< RBD_MAX_OBJ_NAME_LEN + sizeof (RBD_SUFFIX));
-	sprintf(rbd_dev->header_name, "%s%s", rbd_dev->image_name, RBD_SUFFIX);
+	switch (rbd_dev->rbd_client->rbd_opts->rbd_format) {
+	case 1:
+		BUILD_BUG_ON(RBD_MAX_HEADER_NAME_LEN
+			< RBD_MAX_OBJ_NAME_LEN + sizeof (RBD_SUFFIX));
+		sprintf(rbd_dev->header_name, "%s%s",
+			rbd_dev->image_name, RBD_SUFFIX);
+		break;
+	case 2:
+		BUILD_BUG_ON(RBD_MAX_HEADER_NAME_LEN
+			< sizeof (RBD_HEADER_PREFIX) + RBD_MAX_OBJ_NAME_LEN);
+		sprintf(rbd_dev->header_name, "%s%s",
+			RBD_HEADER_PREFIX, rbd_dev->image_name);
+		break;
+	default:
+		BUG();
+		goto err_put_id;
+	}
+
+{
+	char *buf;
+	size_t buf_size = 4096;
+	char rbd_name[64];
+	u64 ver = 0;
+	int rc;
+	void *p;
+	size_t sz;
+	char id_buf[16];
+
+	sprintf(rbd_name, "%s%s", RBD_OBJ_ID_PREFIX, rbd_dev->image_name);
+	buf = kzalloc(buf_size, GFP_KERNEL);
+	if (!buf)
+		goto err_out_client;
+
+	rc = rbd_req_sync_read(rbd_dev, NULL, CEPH_NOSNAP,
+			rbd_name, 0, buf_size, buf, &ver);
+	if (rc < 0) {
+		printk("rbd id object \"%s\" read returned %d\n",
+			rbd_name, rc);
+		kfree(buf);
+		goto err_out_client;
+	}
+
+	p = buf;
+	sz = ceph_decode_string(&p, id_buf, sizeof (id_buf));
+	if (sz >= sizeof (id_buf)) {
+		printk("rbd id object \"%s\" contents too big (%d >= %d)\n",
+			rbd_name, (int) sz, (int) sizeof (id_buf));
+		kfree(buf);
+		goto err_out_client;
+	}
+	printk("rbd id object \"%s\" contains: <%s>\n", rbd_name, id_buf);
+
+	sprintf(rbd_name, "%s%s", RBD_HEADER_PREFIX, id_buf);
+#if 0
+	rc = rbd_req_sync_read(rbd_dev, NULL, CEPH_NOSNAP,
+			rbd_name, 0, buf_size, buf, &ver);
+	if (rc < 0) {
+		printk("rbd header object \"%s\" read returned %d\n",
+			rbd_name, rc);
+		kfree(buf);
+		goto err_out_client;
+	}
+	printk("rbd header object \"%s\" contains %d bytes:",
+		rbd_name, rc);
+	for (i = 0; i < rc; i++)
+		printk("%s%02x", i % 16 ? " " : "\n\t", buf[i]);
+	printk("\n");
+#endif
+    if (0) {
+	// char obj_prefix[64];
+	// size_t obj_prefix_size = sizeof (obj_prefix);
+	// size_t size;
+	struct page *data_page;
+	void *inbound;
+	void *ip;
+	u64 ver = 0;
+	int ret;
+	uint8_t order;
+	u32 obj_size;
+
+	data_page = __page_cache_alloc(GFP_KERNEL);
+	if (!data_page) {
+		kfree(buf);
+		rc = -ENOMEM;
+		goto err_out_client;
+	}
+	inbound = kmap(data_page);
+
+	ret = rbd_req_sync_exec(rbd_dev, rbd_name,
+				"rbd", "get_size",
+				NULL, 0, inbound, PAGE_CACHE_SIZE,
+				CEPH_OSD_FLAG_READ,
+				&ver);
+	dout("  rbd_req_sync_exec(size) -> %d\n", ret);
+	if (ret < 0) {
+		kunmap(data_page);
+		page_cache_release(data_page);
+		kfree(buf);
+		goto err_out_client;
+	}
+	ip = inbound;
+	order = ceph_decode_8(&ip);
+	obj_size = ceph_decode_32(&ip);
+
+#if 0
+	ret = rbd_req_sync_exec(rbd_dev, rbd_name,
+				"rbd", "get_object_prefix",
+				NULL, 0, inbound, PAGE_CACHE_SIZE,
+				CEPH_OSD_FLAG_READ,
+				&ver);
+	dout("  rbd_req_sync_exec(prefix) -> %d\n", ret);
+	if (ret < 0) {
+		kunmap(data_page);
+		page_cache_release(data_page);
+		kfree(buf);
+		goto err_out_client;
+	}
+
+	/*
+	 * To guarantee we never overrun our page in the string
+	 * decode function, compute the space in it that could hold
+	 * the object prefix, accounting for the order byte and the
+	 * length field for the object prefix string.
+	 */
+	size = PAGE_CACHE_SIZE - sizeof (order) - sizeof (u32);
+	size = min(size, obj_prefix_size);
+
+	obj_prefix_size = ceph_decode_string(&inbound, obj_prefix, size);
+
+	if (obj_prefix_size >= size) {
+		rc = -ERANGE;
+		kunmap(data_page);
+		page_cache_release(data_page);
+		kfree(buf);
+		goto err_out_client;
+	}
+	printk("obj_order = %u = 0x%02x -> %u bytes/segment\n",
+				(unsigned int) order, order,
+				1U << order);
+	printk("obj_size = %u = 0x%08x\n", obj_size, obj_size);
+	printk("obj_prefix = <%s>, length = %d\n", obj_prefix,
+		(int) obj_prefix_size);
+#endif
+	kunmap(data_page);
+	page_cache_release(data_page);
+    }
+	kfree(buf);
+}
 
 	/* register our block device */
 	rc = register_blkdev(0, rbd_dev->name);
