@@ -444,17 +444,17 @@ static struct rbd_client *rbd_get_client(const char *mon_addr,
 		kref_get(&rbdc->kref);
 		spin_unlock(&rbd_client_list_lock);
 
-		ceph_destroy_options(ceph_opts);
-		kfree(rbd_opts);
-
-		return rbdc;
+		goto out;
 	}
 	spin_unlock(&rbd_client_list_lock);
 
 	rbdc = rbd_client_create(ceph_opts, rbd_opts);
+	if (!IS_ERR(rbdc))
+		return rbdc;
 
-	if (IS_ERR(rbdc))
-		kfree(rbd_opts);
+out:	/* Reusing existing client, or error creating a new one */
+	ceph_destroy_options(ceph_opts);
+	kfree(rbd_opts);
 
 	return rbdc;
 }
