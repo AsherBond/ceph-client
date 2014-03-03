@@ -190,7 +190,7 @@ more:
 		if (last) {
 			/* remember our position */
 			fi->dentry = last;
-			fi->next_offset = di->offset;
+			fi->next_offset = fpos_off(di->offset);
 		}
 		dput(dentry);
 		return 0;
@@ -322,9 +322,6 @@ more:
 			fi->last_readdir = NULL;
 		}
 
-		/* requery frag tree, as the frag topology may have changed */
-		frag = ceph_choose_frag(ceph_inode(inode), frag, NULL, NULL);
-
 		dout("readdir fetching %llx.%llx frag %x offset '%s'\n",
 		     ceph_vinop(inode), frag, fi->last_name);
 		req = ceph_mdsc_create_request(mdsc, op, USE_AUTH_MDS);
@@ -369,9 +366,9 @@ more:
 				fi->next_offset = 0;
 			off = fi->next_offset;
 		}
+		fi->frag = frag;
 		fi->offset = fi->next_offset;
 		fi->last_readdir = req;
-		fi->frag = frag;
 
 		if (req->r_reply_info.dir_end) {
 			kfree(fi->last_name);
@@ -454,7 +451,7 @@ more:
 	return 0;
 }
 
-static void reset_readdir(struct ceph_file_info *fi)
+static void reset_readdir(struct ceph_file_info *fi, unsigned frag)
 {
 	if (fi->last_readdir) {
 		ceph_mdsc_put_request(fi->last_readdir);
@@ -462,7 +459,10 @@ static void reset_readdir(struct ceph_file_info *fi)
 	}
 	kfree(fi->last_name);
 	fi->last_name = NULL;
-	fi->next_offset = 2;  /* compensate for . and .. */
+	if (ceph_frag_is_leftmost(frag))
+		fi->next_offset = 2;  /* compensate for . and .. */
+	else
+		fi->next_offset = 0;
 	if (fi->dentry) {
 		dput(fi->dentry);
 		fi->dentry = NULL;
@@ -474,7 +474,7 @@ static loff_t ceph_dir_llseek(struct file *file, loff_t offset, int whence)
 {
 	struct ceph_file_info *fi = file->private_data;
 	struct inode *inode = file->f_mapping->host;
-	loff_t old_offset = offset;
+	loff_t old_offset = ceph_make_fpos(fi->frag, fi->next_offset);
 	loff_t retval;
 
 	mutex_lock(&inode->i_mutex);
@@ -491,7 +491,7 @@ static loff_t ceph_dir_llseek(struct file *file, loff_t offset, int whence)
 		goto out;
 	}
 
-	if (offset >= 0 && offset <= inode->i_sb->s_maxbytes) {
+	if (offset >= 0) {
 		if (offset != file->f_pos) {
 			file->f_pos = offset;
 			file->f_version = 0;
@@ -504,14 +504,14 @@ static loff_t ceph_dir_llseek(struct file *file, loff_t offset, int whence)
 		 * seek to new frag, or seek prior to current chunk.
 		 */
 		if (offset == 0 ||
-		    fpos_frag(offset) != fpos_frag(old_offset) ||
+		    fpos_frag(offset) != fi->frag ||
 		    fpos_off(offset) < fi->offset) {
 			dout("dir_llseek dropping %p content\n", file);
-			reset_readdir(fi);
+			reset_readdir(fi, fpos_frag(offset));
 		}
 
 		/* bump dir_release_count if we did a forward seek */
-		if (offset > old_offset)
+		if (fpos_cmp(offset, old_offset) > 0)
 			fi->dir_release_count--;
 	}
 out:
@@ -812,8 +812,7 @@ static int ceph_link(struct dentry *old_dentry, struct inode *dir,
 	}
 	req->r_dentry = dget(dentry);
 	req->r_num_caps = 2;
-	req->r_old_dentry = dget(old_dentry); /* or inode? hrm. */
-	req->r_old_dentry_dir = ceph_get_dentry_parent_inode(old_dentry);
+	req->r_old_dentry = dget(old_dentry);
 	req->r_locked_dir = dir;
 	req->r_dentry_drop = CEPH_CAP_FILE_SHARED;
 	req->r_dentry_unless = CEPH_CAP_FILE_EXCL;
@@ -911,10 +910,11 @@ static int ceph_rename(struct inode *old_dir, struct dentry *old_dentry,
 	req = ceph_mdsc_create_request(mdsc, CEPH_MDS_OP_RENAME, USE_AUTH_MDS);
 	if (IS_ERR(req))
 		return PTR_ERR(req);
+	ihold(old_dir);
 	req->r_dentry = dget(new_dentry);
 	req->r_num_caps = 2;
 	req->r_old_dentry = dget(old_dentry);
-	req->r_old_dentry_dir = ceph_get_dentry_parent_inode(old_dentry);
+	req->r_old_dentry_dir = old_dir;
 	req->r_locked_dir = new_dir;
 	req->r_old_dentry_drop = CEPH_CAP_FILE_SHARED;
 	req->r_old_dentry_unless = CEPH_CAP_FILE_EXCL;
