@@ -68,15 +68,7 @@ void __armada_drm_queue_unref_work(struct drm_device *dev,
 {
 	struct armada_private *priv = dev->dev_private;
 
-	/*
-	 * Yes, we really must jump through these hoops just to store a
-	 * _pointer_ to something into the kfifo.  This is utterly insane
-	 * and idiotic, because it kfifo requires the _data_ pointed to by
-	 * the pointer const, not the pointer itself.  Not only that, but
-	 * you have to pass a pointer _to_ the pointer you want stored.
-	 */
-	const struct drm_framebuffer *silly_api_alert = fb;
-	WARN_ON(!kfifo_put(&priv->fb_unref, &silly_api_alert));
+	WARN_ON(!kfifo_put(&priv->fb_unref, fb));
 	schedule_work(&priv->fb_unref_work);
 }
 
@@ -181,7 +173,7 @@ static int armada_drm_load(struct drm_device *dev, unsigned long flags)
 	if (ret)
 		goto err_kms;
 
-	ret = drm_irq_install(dev);
+	ret = drm_irq_install(dev, platform_get_irq(dev->platformdev, 0));
 	if (ret)
 		goto err_kms;
 
@@ -410,7 +402,7 @@ static struct platform_driver armada_drm_platform_driver = {
 
 static int __init armada_drm_init(void)
 {
-	armada_drm_driver.num_ioctls = DRM_ARRAY_SIZE(armada_ioctls);
+	armada_drm_driver.num_ioctls = ARRAY_SIZE(armada_ioctls);
 	return platform_driver_register(&armada_drm_platform_driver);
 }
 module_init(armada_drm_init);

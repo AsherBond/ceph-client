@@ -453,7 +453,7 @@ TP_STATUS_COPY        : This flag indicates that the frame (and associated
                         enabled previously with setsockopt() and 
                         the PACKET_COPY_THRESH option. 
 
-                        The number of frames than can be buffered to 
+                        The number of frames that can be buffered to
                         be read with recvfrom is limited like a normal socket.
                         See the SO_RCVBUF option in the socket (7) man page.
 
@@ -578,7 +578,7 @@ processes. This also works in combination with mmap(2) on packet sockets.
 
 Currently implemented fanout policies are:
 
-  - PACKET_FANOUT_HASH: schedule to socket by skb's rxhash
+  - PACKET_FANOUT_HASH: schedule to socket by skb's packet hash
   - PACKET_FANOUT_LB: schedule to socket by round-robin
   - PACKET_FANOUT_CPU: schedule to socket by CPU packet arrives on
   - PACKET_FANOUT_RND: schedule to socket by random selection
